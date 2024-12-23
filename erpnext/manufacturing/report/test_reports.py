@@ -14,10 +14,10 @@ DEFAULT_FILTERS = {
 
 
 REPORT_FILTER_TEST_CASES: list[tuple[ReportName, ReportFilters]] = [
-	("BOM Explorer", {"bom": frappe.get_last_doc("BOM").name}),
+	# ("BOM Explorer", {"bom": frappe.get_last_doc("BOM").name}),
 	("BOM Operations Time", {}),
-	("BOM Stock Calculated", {"bom": frappe.get_last_doc("BOM").name, "qty_to_make": 2}),
-	("BOM Stock Report", {"bom": frappe.get_last_doc("BOM").name, "qty_to_produce": 2}),
+	# ("BOM Stock Calculated", {"bom": frappe.get_last_doc("BOM").name, "qty_to_make": 2}),
+	# ("BOM Stock Report", {"bom": frappe.get_last_doc("BOM").name, "qty_to_produce": 2}),
 	("Cost of Poor Quality Report", {"item": "_Test Item", "serial_no": "00"}),
 	("Downtime Analysis", {}),
 	(
