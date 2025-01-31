@@ -17,8 +17,6 @@ class TestTaxesAndTotals(AccountsTestMixin, IntegrationTestCase):
 		so.items[1].rate = 200
 		so.save()
 
-		calculate_taxes_and_totals(so)
-
 		self.assertAlmostEqual(so.items[0].distributed_discount_amount, 33.33, places=2)
 		self.assertAlmostEqual(so.items[1].distributed_discount_amount, 66.67, places=2)
 		self.assertAlmostEqual(so.items[0].net_amount, 466.67, places=2)
@@ -48,8 +46,6 @@ class TestTaxesAndTotals(AccountsTestMixin, IntegrationTestCase):
 			},
 		)
 		so.save()
-
-		calculate_taxes_and_totals(so)
 
 		# like in test_distributed_discount_amount, but reduced by the included tax
 		self.assertAlmostEqual(so.items[0].distributed_discount_amount, 33.33 / 1.1, places=2)
