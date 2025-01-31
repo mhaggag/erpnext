@@ -35,6 +35,7 @@
   "add_taxes_from_taxes_and_charges_template",
   "book_tax_discount_loss",
   "round_row_wise_tax",
+  "apply_inclusive_tax_rounding_correction",
   "print_settings",
   "show_inclusive_tax_in_print",
   "show_taxes_as_table_in_print",
@@ -631,6 +632,13 @@
    "fieldname": "add_taxes_from_taxes_and_charges_template",
    "fieldtype": "Check",
    "label": "Automatically Add Taxes from Taxes and Charges Template"
+  },
+  {
+   "default": "1",
+   "description": "When enabled, tax calculations for tax-inclusive items will adjust the computed tax so that sum(taxes included in rate) + net rate = tax-included item rate",
+   "fieldname": "apply_inclusive_tax_rounding_correction",
+   "fieldtype": "Check",
+   "label": "Apply Inclusive Tax Rounding Correction"
   }
  ],
  "grid_page_length": 50,
@@ -639,7 +647,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-06-23 15:55:33.346398",
+ "modified": "2025-06-29 07:05:12.316638",
  "modified_by": "Administrator",
  "module": "Accounts",
  "name": "Accounts Settings",

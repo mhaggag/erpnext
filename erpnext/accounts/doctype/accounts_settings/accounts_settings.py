@@ -29,6 +29,7 @@ class AccountsSettings(Document):
 		allow_multi_currency_invoices_against_single_party_account: DF.Check
 		allow_pegged_currencies_exchange_rates: DF.Check
 		allow_stale: DF.Check
+		apply_inclusive_tax_rounding_correction: DF.Check
 		auto_reconcile_payments: DF.Check
 		auto_reconciliation_job_trigger: DF.Int
 		automatically_fetch_payment_terms: DF.Check

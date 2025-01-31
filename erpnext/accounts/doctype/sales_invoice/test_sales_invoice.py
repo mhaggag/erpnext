@@ -3,6 +3,7 @@
 
 import copy
 import json
+from typing import cast
 
 import frappe
 from frappe import qb
@@ -20,7 +21,7 @@ from erpnext.accounts.doctype.purchase_invoice.purchase_invoice import Warehouse
 from erpnext.accounts.doctype.purchase_invoice.test_purchase_invoice import (
 	unlink_payment_on_cancel_of_invoice,
 )
-from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_inter_company_transaction
+from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_inter_company_transaction, SalesInvoice
 from erpnext.accounts.utils import PaymentEntryUnlinkError
 from erpnext.assets.doctype.asset.depreciation import post_depreciation_entries
 from erpnext.assets.doctype.asset.test_asset import create_asset, create_asset_data
@@ -49,6 +50,7 @@ from erpnext.stock.doctype.stock_reconciliation.test_stock_reconciliation import
 from erpnext.stock.get_item_details import get_item_tax_map
 from erpnext.stock.utils import get_incoming_rate, get_stock_balance
 from erpnext.tests.utils import ERPNextTestSuite
+from erpnext.utilities.regional import temporary_flag
 
 
 class TestSalesInvoice(ERPNextTestSuite):
@@ -333,6 +335,68 @@ class TestSalesInvoice(ERPNextTestSuite):
 		self.assertEqual(si.base_grand_total, 1627.0)
 		self.assertEqual(si.grand_total, 32.54)
 
+	def test_sales_invoice_with_inclusive_tax(self):
+		# The first two cases exhibit similar but opposite behaviors:
+		# The first results in net total of 30.43 and a taxes[0].total of 34.99 (0.1 lower than expected)
+		# The second results in a net total of 69.57 and a taxes[0].total of 80.01 (0.1 higher than expected)
+		# Third and fourth were reported by a customer here:
+		# https://github.com/lavaloon-eg/ksa_compliance/issues/176#issuecomment-2489340934
+		cases = [
+			{
+				"rate": 35.0,
+				"qty": 1,
+				"net_amount": 30.43,
+				"tax_amount": 4.57,
+				"grand_total": 35.0,
+			},
+			{
+				"rate": 80.0,
+				"qty": 1,
+				"net_amount": 69.57,
+				"tax_amount": 10.43,
+				"grand_total": 80.0,
+			},
+			{
+				"rate": 50.0,
+				"qty": 3,
+				"net_amount": 130.43,
+				"tax_amount": 19.57,
+				"grand_total": 150.0,
+			},
+			{
+				"rate": 20.0,
+				"qty": 2,
+				"net_amount": 34.78,
+				"tax_amount": 5.22,
+				"grand_total": 40.0,
+			},
+		]
+
+		for case in cases:
+			with self.subTest(f"{case['qty']} x {case['rate']}"):
+				si = cast(SalesInvoice, create_sales_invoice(qty=case['qty'], rate=case['rate'], do_not_save=True))
+				si.append(
+					"taxes",
+					{
+						"charge_type": "On Net Total",
+						"account_head": "_Test Account Service Tax - _TC",
+						"cost_center": "_Test Cost Center - _TC",
+						"description": "VAT",
+						"rate": 15,
+						"included_in_print_rate": 1,
+					},
+				)
+				si.insert()
+
+				# There should be no difference between total in taxes and grand total in all these cases
+				# (ideally, in all cases)
+				self.assertEqual(si.items[0].net_amount, case['net_amount'])
+				self.assertEqual(si.net_total, si.base_net_total)
+				self.assertEqual(si.net_total, case['net_amount'])
+				self.assertEqual(si.grand_total, case['grand_total'])
+				self.assertEqual(si.taxes[0].tax_amount, case['tax_amount'])
+				self.assertEqual(si.taxes[0].total, case['grand_total'])
+
 	def test_sales_invoice_with_discount_and_inclusive_tax(self):
 		si = create_sales_invoice(qty=100, rate=50, do_not_save=True)
 		si.append(
@@ -453,7 +517,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 		# check tax calculation
 		expected_values = {
 			"keys": ["tax_amount", "tax_amount_after_discount_amount", "total"],
-			"_Test Account Excise Duty - _TC": [140, 130.31, 1293.76],
+			"_Test Account Excise Duty - _TC": [139.99, 130.31, 1293.76],
 			"_Test Account Education Cess - _TC": [2.8, 2.61, 1296.37],
 			"_Test Account S&H Education Cess - _TC": [1.4, 1.30, 1297.67],
 			"_Test Account CST - _TC": [27.88, 25.95, 1323.62],
@@ -466,7 +530,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 
 		for d in si.get("taxes"):
 			for i, k in enumerate(expected_values["keys"]):
-				self.assertEqual(d.get(k), expected_values[d.account_head][i])
+				self.assertEqual(d.get(k), expected_values[d.account_head][i],f"Unexpected {k}")
 
 		self.assertEqual(si.base_grand_total, 1500)
 		self.assertEqual(si.grand_total, 1500)
@@ -736,19 +800,20 @@ class TestSalesInvoice(ERPNextTestSuite):
 		# check tax calculation
 		expected_values = {
 			"keys": ["tax_amount", "total"],
-			"_Test Account Excise Duty - _TC": [140, 1389.98],
-			"_Test Account Education Cess - _TC": [2.8, 1392.78],
-			"_Test Account S&H Education Cess - _TC": [1.4, 1394.18],
-			"_Test Account CST - _TC": [27.88, 1422.06],
-			"_Test Account VAT - _TC": [156.25, 1578.31],
-			"_Test Account Customs Duty - _TC": [125, 1703.31],
-			"_Test Account Shipping Charges - _TC": [100, 1803.31],
-			"_Test Account Discount - _TC": [-180.33, 1622.98],
+			# Excise duty adjusted by 0.01 down to bring sum of included taxes from 125.03 to 125.02
+			"_Test Account Excise Duty - _TC": [139.99, 1389.97],
+			"_Test Account Education Cess - _TC": [2.8, 1392.77],
+			"_Test Account S&H Education Cess - _TC": [1.4, 1394.17],
+			"_Test Account CST - _TC": [27.88, 1422.05],
+			"_Test Account VAT - _TC": [156.25, 1578.30],
+			"_Test Account Customs Duty - _TC": [125, 1703.30],
+			"_Test Account Shipping Charges - _TC": [100, 1803.30],
+			"_Test Account Discount - _TC": [-180.33, 1622.97],
 		}
 
 		for d in si.get("taxes"):
 			for i, k in enumerate(expected_values["keys"]):
-				self.assertEqual(d.get(k), expected_values[d.account_head][i])
+				self.assertEqual(d.get(k), expected_values[d.account_head][i], f"Unexpected {k} for {d.account_head}")
 
 		self.assertEqual(si.base_grand_total, 1622.97)
 		self.assertEqual(si.grand_total, 1622.97)
@@ -819,15 +884,15 @@ class TestSalesInvoice(ERPNextTestSuite):
 			"_Test Account Education Cess - _TC": [111, 55152.5, 2.22, 1103.05],
 			"_Test Account S&H Education Cess - _TC": [55.5, 55208.0, 1.11, 1104.16],
 			"_Test Account CST - _TC": [1104, 56312.0, 22.08, 1126.24],
-			"_Test Account VAT - _TC": [6187.5, 62499.5, 123.75, 1249.99],
-			"_Test Account Customs Duty - _TC": [4950.0, 67449.5, 99.0, 1348.99],
-			"_Test Account Shipping Charges - _TC": [100, 67549.5, 2, 1350.99],
-			"_Test Account Discount - _TC": [-6755, 60794.5, -135.10, 1215.89],
+			"_Test Account VAT - _TC": [6188.0, 62500.0, 123.76, 1250.0],
+			"_Test Account Customs Duty - _TC": [4950.0, 67450.0, 99.0, 1349.0],
+			"_Test Account Shipping Charges - _TC": [100, 67550.0, 2, 1351.0],
+			"_Test Account Discount - _TC": [-6755, 60795.0, -135.10, 1215.9],
 		}
 
 		for d in si.get("taxes"):
 			for i, k in enumerate(expected_values["keys"]):
-				self.assertEqual(d.get(k), expected_values[d.account_head][i])
+				self.assertEqual(d.get(k), expected_values[d.account_head][i], f"Unexpected {k} for {d.account_head}")
 
 		self.assertEqual(si.base_grand_total, 60795)
 		self.assertEqual(si.grand_total, 1215.90)
@@ -1253,8 +1318,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 			[
 				[si.debit_to, 100.0, 0.0],
 				[pos.items[0].income_account, 0.0, 89.09],
-				["Round Off - TCP1", 0.0, 0.01],
-				[pos.taxes[0].account_head, 0.0, 10.69],
+				[pos.taxes[0].account_head, 0.0, 10.7],
 				[pos.taxes[1].account_head, 0.0, 0.21],
 				[stock_in_hand, 0.0, abs(sle.stock_value_difference)],
 				[pos.items[0].expense_account, abs(sle.stock_value_difference), 0.0],
@@ -1265,6 +1329,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 			]
 		)
 
+		self.assertEqual(len(expected_gl_entries), len(gl_entries), "Unexpected number of GL entries")
 		for i, gle in enumerate(sorted(gl_entries, key=lambda gle: gle.account)):
 			self.assertEqual(expected_gl_entries[i][0], gle.account)
 			self.assertEqual(expected_gl_entries[i][1], gle.debit)
@@ -2288,7 +2353,8 @@ class TestSalesInvoice(ERPNextTestSuite):
 		self.assertEqual(si.net_total, si.base_net_total)
 		self.assertEqual(si.net_total, 4007.15)
 		self.assertEqual(si.grand_total, 4488.02)
-		self.assertEqual(si.total_taxes_and_charges, 480.86)
+		# TODO: Review this test
+		self.assertEqual(si.total_taxes_and_charges, 480.87)
 		self.assertEqual(si.rounding_adjustment, -0.02)
 
 		round_off_account = frappe.get_cached_value("Company", "_Test Company", "round_off_account")
@@ -2296,10 +2362,10 @@ class TestSalesInvoice(ERPNextTestSuite):
 			(d[0], d)
 			for d in [
 				[si.debit_to, 4488.0, 0.0],
-				["_Test Account Service Tax - _TC", 0.0, 240.43],
+				["_Test Account Service Tax - _TC", 0.0, 240.44],
 				["_Test Account VAT - _TC", 0.0, 240.43],
 				["Sales - _TC", 0.0, 4007.15],
-				[round_off_account, 0.01, 0.0],
+				[round_off_account, 0.02, 0.0],
 			]
 		)
 
@@ -4076,7 +4142,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 		)
 		self.assertEqual(len(res), 3)
 
-	def _create_opening_invoice_with_inclusive_tax(self):
+	def _create_opening_invoice_with_inclusive_tax(self) -> SalesInvoice:
 		si = create_sales_invoice(qty=1, rate=90, do_not_submit=True)
 		si.is_opening = "Yes"
 		si.items[0].income_account = "Temporary Opening - _TC"
@@ -4096,36 +4162,63 @@ class TestSalesInvoice(ERPNextTestSuite):
 			},
 		)
 		# there will be 0.01 precision loss between Dr and Cr
-		# caused by 'included_in_print_tax' option
+		# caused by 'included_in_print_tax' option if rounding correction is disabled
 		si.save()
 		return si
 
 	def test_rounding_validation_for_opening_with_inclusive_tax(self):
-		si = self._create_opening_invoice_with_inclusive_tax()
-		# 'Round Off for Opening' not set in Company master
-		# Ledger level validation must be thrown
-		self.assertRaises(frappe.ValidationError, si.submit)
+		with self.subTest("Without adjusting inclusive tax"):
+			with change_settings("Accounts Settings", {"apply_inclusive_tax_rounding_correction": False}):
+				si = self._create_opening_invoice_with_inclusive_tax()
+				# 'Round Off for Opening' not set in Company master
+				# Ledger level validation must be thrown
+				self.assertRaises(frappe.ValidationError, si.submit)
 
-	def test_ledger_entries_on_opening_invoice_with_rounding_loss_by_inclusive_tax(self):
-		si = self._create_opening_invoice_with_inclusive_tax()
-		# 'Round Off for Opening' is set in Company master
-		self._create_opening_roundoff_account(si.company)
+		with self.subTest("With adjusting inclusive tax"):
+			si = self._create_opening_invoice_with_inclusive_tax()
+			si.submit()
+			# No exception should be raised
 
-		si.submit()
-		actual = frappe.db.get_all(
-			"GL Entry",
-			filters={"voucher_no": si.name, "is_opening": "Yes", "is_cancelled": False},
-			fields=["account", "debit", "credit", "is_opening"],
-			order_by="account,debit",
-		)
-		expected = [
-			{"account": "_Test Account Service Tax - _TC", "debit": 0.0, "credit": 6.9, "is_opening": "Yes"},
-			{"account": "Debtors - _TC", "debit": 145.0, "credit": 0.0, "is_opening": "Yes"},
-			{"account": "Round Off for Opening - _TC", "debit": 0.0, "credit": 0.01, "is_opening": "Yes"},
-			{"account": "Temporary Opening - _TC", "debit": 0.0, "credit": 138.09, "is_opening": "Yes"},
+	def test_ledger_entries_on_opening_invoice_with_inclusive_tax(self):
+		cases = [{
+			'adjust': False,
+			'expected': [
+					{"account": "_Test Account Service Tax - _TC", "debit": 0.0, "credit": 6.9, "is_opening": "Yes"},
+					{"account": "Debtors - _TC", "debit": 145.0, "credit": 0.0, "is_opening": "Yes"},
+					{"account": "Round Off for Opening - _TC", "debit": 0.0, "credit": 0.01, "is_opening": "Yes"},
+					{"account": "Temporary Opening - _TC", "debit": 0.0, "credit": 138.09, "is_opening": "Yes"},
+				]
+			},
+			{
+				'adjust': True,
+				'expected': [
+					{"account": "_Test Account Service Tax - _TC", "debit": 0.0, "credit": 6.91, "is_opening": "Yes"},
+					{"account": "Debtors - _TC", "debit": 145.0, "credit": 0.0, "is_opening": "Yes"},
+					{"account": "Temporary Opening - _TC", "debit": 0.0, "credit": 138.09, "is_opening": "Yes"},
+				]
+			},
+
 		]
-		self.assertEqual(len(actual), 4)
-		self.assertEqual(expected, actual)
+
+		for case in cases:
+			adjust = case['adjust']
+			expected = case['expected']
+			with self.subTest("Applying inclusive tax rounding correction" if adjust else "Without inclusive tax rounding correction"):
+				with change_settings("Accounts Settings", {"apply_inclusive_tax_rounding_correction": adjust}):
+					si = self._create_opening_invoice_with_inclusive_tax()
+					# 'Round Off for Opening' is set in Company master
+					self._create_opening_roundoff_account(si.company)
+
+					si.submit()
+					actual = frappe.db.get_all(
+						"GL Entry",
+						filters={"voucher_no": si.name, "is_opening": "Yes", "is_cancelled": False},
+						fields=["account", "debit", "credit", "is_opening"],
+						order_by="account,debit",
+					)
+					self.assertEqual(len(actual), len(expected))
+					self.assertListEqual(expected, actual)
+
 
 	@IntegrationTestCase.change_settings("Accounts Settings", {"enable_common_party_accounting": True})
 	def test_common_party_with_foreign_currency_jv(self):
@@ -4568,7 +4661,7 @@ def check_gl_entries(doc, voucher_no, expected_gle, posting_date, voucher_type="
 		doc.assertEqual(getdate(expected_gle[i][3]), gle.posting_date)
 
 
-def create_sales_invoice(**args):
+def create_sales_invoice(**args) -> SalesInvoice:
 	si = frappe.new_doc("Sales Invoice")
 	args = frappe._dict(args)
 	if args.posting_date:

@@ -1,7 +1,6 @@
 from frappe.tests import IntegrationTestCase
 
 from erpnext.accounts.test.accounts_mixin import AccountsTestMixin
-from erpnext.controllers.taxes_and_totals import calculate_taxes_and_totals
 from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
 
 
@@ -17,8 +16,6 @@ class TestTaxesAndTotals(AccountsTestMixin, IntegrationTestCase):
 		so.items[1].rate = 200
 		so.save()
 
-		calculate_taxes_and_totals(so)
-
 		self.assertAlmostEqual(so.items[0].distributed_discount_amount, 33.33, places=2)
 		self.assertAlmostEqual(so.items[1].distributed_discount_amount, 66.67, places=2)
 		self.assertAlmostEqual(so.items[0].net_amount, 466.67, places=2)
@@ -31,9 +28,11 @@ class TestTaxesAndTotals(AccountsTestMixin, IntegrationTestCase):
 		so = make_sales_order(do_not_save=1)
 		so.apply_discount_on = "Grand Total"
 		so.discount_amount = 100
+		so.items[0].idx = 1
 		so.items[0].qty = 5
 		so.items[0].rate = 100
 		so.append("items", so.items[0].as_dict())
+		so.items[1].idx = 2
 		so.items[1].qty = 5
 		so.items[1].rate = 200
 		so.append(
@@ -48,8 +47,6 @@ class TestTaxesAndTotals(AccountsTestMixin, IntegrationTestCase):
 			},
 		)
 		so.save()
-
-		calculate_taxes_and_totals(so)
 
 		# like in test_distributed_discount_amount, but reduced by the included tax
 		self.assertAlmostEqual(so.items[0].distributed_discount_amount, 33.33 / 1.1, places=2)
