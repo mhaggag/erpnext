@@ -1,7 +1,6 @@
 from frappe.tests import IntegrationTestCase
 
 from erpnext.accounts.test.accounts_mixin import AccountsTestMixin
-from erpnext.controllers.taxes_and_totals import calculate_taxes_and_totals
 from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
 
 
