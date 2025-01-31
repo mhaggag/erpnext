@@ -22,17 +22,18 @@ def update_itemised_tax_data(doc):
 
 	for row in doc.items:
 		tax_rate, tax_amount = 0.0, 0.0
+		net_amount = row.get("net_amount_no_rounding") or row.net_amount
 		# dont even bother checking in item tax template as it contains both input and output accounts - double the tax rate
 		item_code = row.item_code or row.item_name
 		if itemised_tax.get(item_code):
 			for tax in itemised_tax.get(item_code).values():
-				_tax_rate = flt(tax.get("tax_rate", 0), row.precision("tax_rate"))
-				tax_amount += flt((row.net_amount * _tax_rate) / 100, row.precision("tax_amount"))
+				_tax_rate = flt(tax.get("tax_rate", 0))
+				tax_amount += flt((net_amount * _tax_rate) / 100)
 				tax_rate += _tax_rate
 
 		row.tax_rate = flt(tax_rate, row.precision("tax_rate"))
 		row.tax_amount = flt(tax_amount, row.precision("tax_amount"))
-		row.total_amount = flt((row.net_amount + row.tax_amount), row.precision("total_amount"))
+		row.total_amount = flt((net_amount + tax_amount), row.precision("total_amount"))
 
 
 def get_account_currency(account):

@@ -3,6 +3,7 @@
 
 import copy
 import json
+from typing import cast
 
 import frappe
 from frappe import qb
@@ -17,7 +18,7 @@ from erpnext.accounts.doctype.purchase_invoice.purchase_invoice import Warehouse
 from erpnext.accounts.doctype.purchase_invoice.test_purchase_invoice import (
 	unlink_payment_on_cancel_of_invoice,
 )
-from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_inter_company_transaction
+from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_inter_company_transaction, SalesInvoice
 from erpnext.accounts.utils import PaymentEntryUnlinkError
 from erpnext.assets.doctype.asset.depreciation import post_depreciation_entries
 from erpnext.assets.doctype.asset.test_asset import create_asset, create_asset_data
@@ -310,6 +311,69 @@ class TestSalesInvoice(IntegrationTestCase):
 		self.assertEqual(si.base_grand_total, 1627.0)
 		self.assertEqual(si.grand_total, 32.54)
 
+	def test_sales_invoice_with_inclusive_tax(self):
+		# The first two cases exhibit similar but opposite behaviors:
+		# The first results in net total of 30.43 and a taxes[0].total of 34.99 (0.1 lower than expected)
+		# The second results in a net total of 69.57 and a taxes[0].total of 80.01 (0.1 higher than expected)
+		# Third and fourth were reported by a customer here:
+		# https://github.com/lavaloon-eg/ksa_compliance/issues/176#issuecomment-2489340934
+		cases = [
+			{
+				"rate": 35.0,
+				"qty": 1,
+				"net_amount": 30.43,
+				"tax_amount": 4.57,
+				"grand_total": 35.0,
+			},
+			{
+				"rate": 80.0,
+				"qty": 1,
+				"net_amount": 69.57,
+				"tax_amount": 10.43,
+				"grand_total": 80.0,
+			},
+			{
+				"rate": 50.0,
+				"qty": 3,
+				"net_amount": 130.43,
+				"tax_amount": 19.57,
+				"grand_total": 150.0,
+			},
+			{
+				"rate": 20.0,
+				"qty": 2,
+				"net_amount": 34.78,
+				"tax_amount": 5.22,
+				"grand_total": 40.0,
+			},
+		]
+
+		for case in cases:
+			with self.subTest(f"{case['qty']} x {case['rate']}"):
+				si = cast(SalesInvoice, create_sales_invoice(qty=case['qty'], rate=case['rate'], do_not_save=True))
+				si.append(
+					"taxes",
+					{
+						"charge_type": "On Net Total",
+						"account_head": "_Test Account Service Tax - _TC",
+						"cost_center": "_Test Cost Center - _TC",
+						"description": "VAT",
+						"rate": 15,
+						"included_in_print_rate": 1,
+					},
+				)
+				si.insert()
+
+				# There should be no difference between total in taxes and grand total in all these cases
+				# (ideally, in all cases)
+				self.assertEqual(si.grand_total_diff, 0)
+				self.assertEqual(si.items[0].net_amount, case['net_amount'])
+				self.assertEqual(si.net_total, si.base_net_total)
+				self.assertEqual(si.net_total, case['net_amount'])
+				self.assertEqual(si.grand_total, case['grand_total'])
+				self.assertEqual(si.taxes[0].tax_amount, case['tax_amount'])
+				self.assertEqual(si.taxes[0].total, case['grand_total'])
+
 	def test_sales_invoice_with_discount_and_inclusive_tax(self):
 		si = create_sales_invoice(qty=100, rate=50, do_not_save=True)
 		si.append(
@@ -340,6 +404,8 @@ class TestSalesInvoice(IntegrationTestCase):
 		self.assertEqual(si.items[0].net_amount, 3947.37)
 		self.assertEqual(si.net_total, si.base_net_total)
 		self.assertEqual(si.net_total, 3947.37)
+		self.assertEqual(si.taxes[0].tax_amount, 552.63)
+		self.assertEqual(si.taxes[1].tax_amount, 500)
 		self.assertEqual(si.grand_total, 5000)
 
 		si.reload()
@@ -492,11 +558,13 @@ class TestSalesInvoice(IntegrationTestCase):
 				[self.globalTestRecords["Sales Invoice"][3]["taxes"][6]["account_head"], 0.0, 100],
 				[self.globalTestRecords["Sales Invoice"][3]["taxes"][7]["account_head"], 168.54, 0.0],
 				["_Test Account Service Tax - _TC", 16.85, 0.0],
-				["Round Off - _TC", 0.01, 0.0],
+				# TODO: This is now reversed (meaning no round-off), so we need to figure out why it's adding
+				# roundoff when it's not needed
+				["Round Off - _TC", 0.0, 0.0],
 			]
 		)
 
-		for gle in gl_entries:
+		for i, gle in enumerate(gl_entries):
 			self.assertEqual(expected_values[gle.account][0], gle.account)
 			self.assertEqual(expected_values[gle.account][1], gle.debit)
 			self.assertEqual(expected_values[gle.account][2], gle.credit)
@@ -707,20 +775,21 @@ class TestSalesInvoice(IntegrationTestCase):
 
 		# check net total
 		self.assertEqual(si.base_net_total, si.net_total)
-		self.assertEqual(si.net_total, 1249.98)
+		# Changed from 98 to 97
+		self.assertEqual(si.net_total, 1249.97)
 		self.assertEqual(si.total, 1578.3)
 
 		# check tax calculation
 		expected_values = {
 			"keys": ["tax_amount", "total"],
-			"_Test Account Excise Duty - _TC": [140, 1389.98],
-			"_Test Account Education Cess - _TC": [2.8, 1392.78],
-			"_Test Account S&H Education Cess - _TC": [1.4, 1394.18],
-			"_Test Account CST - _TC": [27.88, 1422.06],
-			"_Test Account VAT - _TC": [156.25, 1578.31],
-			"_Test Account Customs Duty - _TC": [125, 1703.31],
-			"_Test Account Shipping Charges - _TC": [100, 1803.31],
-			"_Test Account Discount - _TC": [-180.33, 1622.98],
+			"_Test Account Excise Duty - _TC": [140, 1389.97],
+			"_Test Account Education Cess - _TC": [2.8, 1392.77],
+			"_Test Account S&H Education Cess - _TC": [1.4, 1394.17],
+			"_Test Account CST - _TC": [27.88, 1422.05],
+			"_Test Account VAT - _TC": [156.25, 1578.3],
+			"_Test Account Customs Duty - _TC": [125, 1703.3],
+			"_Test Account Shipping Charges - _TC": [100, 1803.3],
+			"_Test Account Discount - _TC": [-180.33, 1622.97],
 		}
 
 		for d in si.get("taxes"):
@@ -758,7 +827,7 @@ class TestSalesInvoice(IntegrationTestCase):
 				"net_rate": 40,
 				"net_amount": 399.98,
 				"base_net_rate": 2000,
-				"base_net_amount": 19999,
+				"base_net_amount": 19999.04,
 			},
 			{
 				"item_code": "_Test Item Home Desktop 200",
@@ -772,7 +841,7 @@ class TestSalesInvoice(IntegrationTestCase):
 				"net_rate": 118.01,
 				"net_amount": 590.05,
 				"base_net_rate": 5900.5,
-				"base_net_amount": 29502.5,
+				"base_net_amount": 29502.66,
 			},
 		]
 
@@ -785,14 +854,26 @@ class TestSalesInvoice(IntegrationTestCase):
 				self.assertEqual(d.get(key), val)
 
 		# check net total
-		self.assertEqual(si.base_net_total, 49501.5)
+		self.assertEqual(si.base_net_total, 49501.7)
 		self.assertEqual(si.net_total, 990.03)
 		self.assertEqual(si.total, 1250)
 
 		# check tax calculation
+		# CNA = Current Net Amount
+		# CTA = Current Tax Amount
+		# | Tax                                            | CNA (Item 1) | CTA (Item 1) | CNA (Item 2) | CTA (Item 2) | Net         | Tax          | Base Tax     | Rounded Tax | Rounded Base Tax |
+		# |------------------------------------------------|--------------|--------------|--------------|--------------|-------------|--------------|--------------|-------------|------------------|
+		# | Excise Duty 12.0% On Net Total                 | 399.9808009  | 39.99808009  | 590.0531205  | 70.80637446  | 990.0339214 | 110.8044546  | 5540.222728  | 110.8       | 5540.22          |
+		# | Education Cess 2.0% On Previous Row Amount     | 39.99808009  | 0.799961602  | 70.80637446  | 1.416127489  | 110.8044546 | 2.216089091  | 110.8044546  | 2.22        | 110.8            |
+		# | S&H Education Cess 1.0% On Previous Row Amount | 39.99808009  | 0.399980801  | 70.80637446  | 0.708063745  | 110.8044546 | 1.108044546  | 55.40222728  | 1.11        | 55.4             |
+		# | CST 2.0% On Previous Row Total                 | 441.1788234  | 8.823576468  | 662.9836862  | 13.25967372  | 1104.16251  | 22.08325019  | 1104.16251   | 22.08       | 1104.16          |
+		# | VAT 12.5% On Net Total                         | 399.9808009  | 49.99760012  | 590.0531205  | 73.75664006  | 990.0339214 | 123.7542402  | 6187.712009  | 123.75      | 6187.71          |
+		# | Customs Duty 10.0% On Net Total                | 399.9808009  | 39.99808009  | 590.0531205  | 59.00531205  | 990.0339214 | 99.00339214  | 4950.169607  | 99          | 4950.17          |
+		# | Shipping Charges 2.0 Actual                    | 399.9808009  | 0.808017537  | 590.0531205  | 1.191990385  | 990.0339214 | 2.000007922  | 100.0003961  | 2           | 100              |
+		# | Discount -10.0% On Previous Row Total          | 540.8060976  | -54.08060976 | 810.1972945  | -81.01972945 | 1351.003392 | -135.1003392 | -6755.016961 | -135.1      | -6755.02         |
 		expected_values = {
 			"keys": ["base_tax_amount", "base_total", "tax_amount", "total"],
-			"_Test Account Excise Duty - _TC": [5540.0, 55041.5, 110.80, 1100.83],
+			"_Test Account Excise Duty - _TC": [5540.22, 55041.7, 110.80, 1100.83],
 			"_Test Account Education Cess - _TC": [111, 55152.5, 2.22, 1103.05],
 			"_Test Account S&H Education Cess - _TC": [55.5, 55208.0, 1.11, 1104.16],
 			"_Test Account CST - _TC": [1104, 56312.0, 22.08, 1126.24],
@@ -804,10 +885,12 @@ class TestSalesInvoice(IntegrationTestCase):
 
 		for d in si.get("taxes"):
 			for i, k in enumerate(expected_values["keys"]):
-				self.assertEqual(d.get(k), expected_values[d.account_head][i])
+				self.assertEqual(d.get(k), expected_values[d.account_head][i], f"Difference in {d.account_head} {k}")
 
 		self.assertEqual(si.base_grand_total, 60795)
 		self.assertEqual(si.grand_total, 1215.90)
+		self.assertEqual(si.grand_total_diff, 0)
+
 		# no rounding adjustment as the Smallest Currency Fraction Value of USD is 0.01
 		if frappe.db.get_value("Currency", "USD", "smallest_currency_fraction_value") < 0.01:
 			self.assertEqual(si.rounding_adjustment, 0.10)
@@ -1701,6 +1784,21 @@ class TestSalesInvoice(IntegrationTestCase):
 		self.assertEqual(si.net_total, 625)
 
 		# check tax calculation
+		# CNA = Current Net Amount
+		# CTA = Current Tax Amount
+		#
+		# | Description                                    | CNA 1   | CTA 1    | CNA 2   | CTA 2    | Tax Total |
+		# |------------------------------------------------|---------|----------|---------|----------|-----------|
+		# | Shipping Charges 100.0 Actual                  | 250     | 40       | 375     | 60       | 100       |
+		# | Customs Duty 10.0% On Net Total                | 250     | 25       | 375     | 37.5     | 62.5      |
+		# | Excise Duty 10.0% On Net Total                 | 250     | 25       | 375     | 45       | 70        |
+		# | Education Cess 2.0% On Previous Row Amount     | 25      | 0.5      | 45      | 0.9      | 1.4       |
+		# | S&H Education Cess 1.0% On Previous Row Amount | 25      | 0.25     | 45      | 0.45     | 0.7       |
+		# | CST 2.0% On Previous Row Total                 | 340.75  | 6.815    | 518.85  | 10.377   | 17.192    |
+		# | VAT 12.5% On Net Total                         | 250     | 31.25    | 375     | 46.875   | 78.125    |
+		# | Discount -10.0% On Previous Row Total          | 378.815 | -37.8815 | 576.102 | -57.6102 | -95.4917  |
+		# |                                                |         |          |         |          | 234.4253  |
+		#
 		expected_values = {
 			"keys": [
 				"tax_amount",
@@ -1722,9 +1820,9 @@ class TestSalesInvoice(IntegrationTestCase):
 				if expected_values.get(d.account_head):
 					self.assertEqual(d.get(k), expected_values[d.account_head][i])
 
-		self.assertEqual(si.total_taxes_and_charges, 234.42)
-		self.assertEqual(si.base_grand_total, 859.42)
-		self.assertEqual(si.grand_total, 859.42)
+		self.assertEqual(si.total_taxes_and_charges, 234.43)
+		self.assertEqual(si.base_grand_total, 859.43)
+		self.assertEqual(si.grand_total, 859.43)
 
 	def test_multi_currency_gle(self):
 		si = create_sales_invoice(
@@ -2279,8 +2377,9 @@ class TestSalesInvoice(IntegrationTestCase):
 
 		si.save()
 		si.submit()
+		self.assertEquals(si.grand_total_diff, 0.0)
 		self.assertEqual(si.net_total, si.base_net_total)
-		self.assertEqual(si.net_total, 4007.15)
+		self.assertEqual(si.net_total, 4007.16)
 		self.assertEqual(si.grand_total, 4488.02)
 		self.assertEqual(si.total_taxes_and_charges, 480.86)
 		self.assertEqual(si.rounding_adjustment, -0.02)
@@ -4324,8 +4423,8 @@ def check_gl_entries(doc, voucher_no, expected_gle, posting_date, voucher_type="
 		doc.assertEqual(getdate(expected_gle[i][3]), gle.posting_date)
 
 
-def create_sales_invoice(**args):
-	si = frappe.new_doc("Sales Invoice")
+def create_sales_invoice(**args) -> SalesInvoice:
+	si = cast(SalesInvoice, frappe.new_doc("Sales Invoice"))
 	args = frappe._dict(args)
 	if args.posting_date:
 		si.set_posting_time = 1
