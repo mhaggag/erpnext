@@ -3,6 +3,7 @@
 
 import copy
 import json
+from typing import cast
 
 import frappe
 from frappe import qb
@@ -17,7 +18,7 @@ from erpnext.accounts.doctype.purchase_invoice.purchase_invoice import Warehouse
 from erpnext.accounts.doctype.purchase_invoice.test_purchase_invoice import (
 	unlink_payment_on_cancel_of_invoice,
 )
-from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_inter_company_transaction
+from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_inter_company_transaction, SalesInvoice
 from erpnext.accounts.utils import PaymentEntryUnlinkError
 from erpnext.assets.doctype.asset.depreciation import post_depreciation_entries
 from erpnext.assets.doctype.asset.test_asset import create_asset, create_asset_data
@@ -309,6 +310,69 @@ class TestSalesInvoice(IntegrationTestCase):
 
 		self.assertEqual(si.base_grand_total, 1627.0)
 		self.assertEqual(si.grand_total, 32.54)
+
+	def test_sales_invoice_with_inclusive_tax(self):
+		# The first two cases exhibit similar but opposite behaviors:
+		# The first results in net total of 30.43 and a taxes[0].total of 34.99 (0.1 lower than expected)
+		# The second results in a net total of 69.57 and a taxes[0].total of 80.01 (0.1 higher than expected)
+		# Third and fourth were reported by a customer here:
+		# https://github.com/lavaloon-eg/ksa_compliance/issues/176#issuecomment-2489340934
+		cases = [
+			{
+				"rate": 35.0,
+				"qty": 1,
+				"net_amount": 30.43,
+				"tax_amount": 4.57,
+				"grand_total": 35.0,
+			},
+			{
+				"rate": 80.0,
+				"qty": 1,
+				"net_amount": 69.57,
+				"tax_amount": 10.43,
+				"grand_total": 80.0,
+			},
+			{
+				"rate": 50.0,
+				"qty": 3,
+				"net_amount": 130.43,
+				"tax_amount": 19.57,
+				"grand_total": 150.0,
+			},
+			{
+				"rate": 20.0,
+				"qty": 2,
+				"net_amount": 34.78,
+				"tax_amount": 5.22,
+				"grand_total": 40.0,
+			},
+		]
+
+		for case in cases:
+			with self.subTest(f"{case['qty']} x {case['rate']}"):
+				si = cast(SalesInvoice, create_sales_invoice(qty=case['qty'], rate=case['rate'], do_not_save=True))
+				si.append(
+					"taxes",
+					{
+						"charge_type": "On Net Total",
+						"account_head": "_Test Account Service Tax - _TC",
+						"cost_center": "_Test Cost Center - _TC",
+						"description": "VAT",
+						"rate": 15,
+						"included_in_print_rate": 1,
+					},
+				)
+				si.insert()
+
+				# There should be no difference between total in taxes and grand total in all these cases
+				# (ideally, in all cases)
+				self.assertEqual(si.grand_total_diff, 0)
+				self.assertEqual(si.items[0].net_amount, case['net_amount'])
+				self.assertEqual(si.net_total, si.base_net_total)
+				self.assertEqual(si.net_total, case['net_amount'])
+				self.assertEqual(si.grand_total, case['grand_total'])
+				self.assertEqual(si.taxes[0].tax_amount, case['tax_amount'])
+				self.assertEqual(si.taxes[0].total, case['grand_total'])
 
 	def test_sales_invoice_with_discount_and_inclusive_tax(self):
 		si = create_sales_invoice(qty=100, rate=50, do_not_save=True)
