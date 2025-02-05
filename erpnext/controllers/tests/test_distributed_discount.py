@@ -28,9 +28,11 @@ class TestTaxesAndTotals(AccountsTestMixin, IntegrationTestCase):
 		so = make_sales_order(do_not_save=1)
 		so.apply_discount_on = "Grand Total"
 		so.discount_amount = 100
+		so.items[0].idx = 1
 		so.items[0].qty = 5
 		so.items[0].rate = 100
 		so.append("items", so.items[0].as_dict())
+		so.items[1].idx = 2
 		so.items[1].qty = 5
 		so.items[1].rate = 200
 		so.append(

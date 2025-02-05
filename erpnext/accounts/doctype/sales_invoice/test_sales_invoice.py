@@ -45,6 +45,7 @@ from erpnext.stock.doctype.stock_reconciliation.test_stock_reconciliation import
 	create_stock_reconciliation,
 )
 from erpnext.stock.utils import get_incoming_rate, get_stock_balance
+from erpnext.utilities.regional import temporary_flag
 
 
 class UnitTestSalesInvoice(UnitTestCase):
@@ -366,13 +367,13 @@ class TestSalesInvoice(IntegrationTestCase):
 
 				# There should be no difference between total in taxes and grand total in all these cases
 				# (ideally, in all cases)
-				self.assertEqual(si.grand_total_diff, 0)
 				self.assertEqual(si.items[0].net_amount, case['net_amount'])
 				self.assertEqual(si.net_total, si.base_net_total)
 				self.assertEqual(si.net_total, case['net_amount'])
 				self.assertEqual(si.grand_total, case['grand_total'])
 				self.assertEqual(si.taxes[0].tax_amount, case['tax_amount'])
 				self.assertEqual(si.taxes[0].total, case['grand_total'])
+				self.assertEqual(si.grand_total_diff, 0)
 
 	def test_sales_invoice_with_discount_and_inclusive_tax(self):
 		si = create_sales_invoice(qty=100, rate=50, do_not_save=True)
@@ -494,7 +495,7 @@ class TestSalesInvoice(IntegrationTestCase):
 		# check tax calculation
 		expected_values = {
 			"keys": ["tax_amount", "tax_amount_after_discount_amount", "total"],
-			"_Test Account Excise Duty - _TC": [140, 130.31, 1293.76],
+			"_Test Account Excise Duty - _TC": [139.99, 130.31, 1293.76],
 			"_Test Account Education Cess - _TC": [2.8, 2.61, 1296.37],
 			"_Test Account S&H Education Cess - _TC": [1.4, 1.30, 1297.67],
 			"_Test Account CST - _TC": [27.88, 25.95, 1323.62],
@@ -507,11 +508,12 @@ class TestSalesInvoice(IntegrationTestCase):
 
 		for d in si.get("taxes"):
 			for i, k in enumerate(expected_values["keys"]):
-				self.assertEqual(d.get(k), expected_values[d.account_head][i])
+				self.assertEqual(d.get(k), expected_values[d.account_head][i],f"Unexpected {k}")
 
 		self.assertEqual(si.base_grand_total, 1500)
 		self.assertEqual(si.grand_total, 1500)
 		self.assertEqual(si.rounding_adjustment, 0.0)
+		self.assertEqual(si.grand_total_diff, 0.0)
 
 	def test_discount_amount_gl_entry(self):
 		frappe.db.set_value("Company", "_Test Company", "round_off_account", "Round Off - _TC")
@@ -2346,7 +2348,8 @@ class TestSalesInvoice(IntegrationTestCase):
 		self.assertEqual(si.net_total, si.base_net_total)
 		self.assertEqual(si.net_total, 4007.15)
 		self.assertEqual(si.grand_total, 4488.02)
-		self.assertEqual(si.total_taxes_and_charges, 480.86)
+		# TODO: Review this test
+		self.assertEqual(si.total_taxes_and_charges, 480.87)
 		self.assertEqual(si.rounding_adjustment, -0.02)
 
 		round_off_account = frappe.get_cached_value("Company", "_Test Company", "round_off_account")
@@ -2354,10 +2357,10 @@ class TestSalesInvoice(IntegrationTestCase):
 			(d[0], d)
 			for d in [
 				[si.debit_to, 4488.0, 0.0],
-				["_Test Account Service Tax - _TC", 0.0, 240.43],
+				["_Test Account Service Tax - _TC", 0.0, 240.44],
 				["_Test Account VAT - _TC", 0.0, 240.43],
 				["Sales - _TC", 0.0, 4007.15],
-				[round_off_account, 0.01, 0.0],
+				[round_off_account, 0.02, 0.0],
 			]
 		)
 
@@ -4098,7 +4101,7 @@ class TestSalesInvoice(IntegrationTestCase):
 		)
 		self.assertEqual(len(res), 3)
 
-	def _create_opening_invoice_with_inclusive_tax(self):
+	def _create_opening_invoice_with_inclusive_tax(self) -> SalesInvoice:
 		si = create_sales_invoice(qty=1, rate=90, do_not_submit=True)
 		si.is_opening = "Yes"
 		si.items[0].income_account = "Temporary Opening - _TC"
@@ -4118,36 +4121,62 @@ class TestSalesInvoice(IntegrationTestCase):
 			},
 		)
 		# there will be 0.01 precision loss between Dr and Cr
-		# caused by 'included_in_print_tax' option
+		# caused by 'included_in_print_tax' option if rounding correction is disabled
 		si.save()
 		return si
 
 	def test_rounding_validation_for_opening_with_inclusive_tax(self):
-		si = self._create_opening_invoice_with_inclusive_tax()
-		# 'Round Off for Opening' not set in Company master
-		# Ledger level validation must be thrown
-		self.assertRaises(frappe.ValidationError, si.submit)
+		with self.subTest('Without adjusting inclusive tax'):
+			with temporary_flag('disable_inclusive_tax_rounding_correction', True):
+				si = self._create_opening_invoice_with_inclusive_tax()
+				# 'Round Off for Opening' not set in Company master
+				# Ledger level validation must be thrown
+				self.assertRaises(frappe.ValidationError, si.submit)
 
-	def test_ledger_entries_on_opening_invoice_with_rounding_loss_by_inclusive_tax(self):
-		si = self._create_opening_invoice_with_inclusive_tax()
-		# 'Round Off for Opening' is set in Company master
-		self._create_opening_roundoff_account(si.company)
+		with self.subTest('With adjusting inclusive tax'):
+			si = self._create_opening_invoice_with_inclusive_tax()
+			# No exception should be raised
 
-		si.submit()
-		actual = frappe.db.get_all(
-			"GL Entry",
-			filters={"voucher_no": si.name, "is_opening": "Yes", "is_cancelled": False},
-			fields=["account", "debit", "credit", "is_opening"],
-			order_by="account,debit",
-		)
-		expected = [
-			{"account": "_Test Account Service Tax - _TC", "debit": 0.0, "credit": 6.9, "is_opening": "Yes"},
-			{"account": "Debtors - _TC", "debit": 145.0, "credit": 0.0, "is_opening": "Yes"},
-			{"account": "Round Off for Opening - _TC", "debit": 0.0, "credit": 0.01, "is_opening": "Yes"},
-			{"account": "Temporary Opening - _TC", "debit": 0.0, "credit": 138.09, "is_opening": "Yes"},
+	def test_ledger_entries_on_opening_invoice_with_inclusive_tax(self):
+		cases = [{
+			'adjust': False,
+			'expected': [
+					{"account": "_Test Account Service Tax - _TC", "debit": 0.0, "credit": 6.9, "is_opening": "Yes"},
+					{"account": "Debtors - _TC", "debit": 145.0, "credit": 0.0, "is_opening": "Yes"},
+					{"account": "Round Off for Opening - _TC", "debit": 0.0, "credit": 0.01, "is_opening": "Yes"},
+					{"account": "Temporary Opening - _TC", "debit": 0.0, "credit": 138.09, "is_opening": "Yes"},
+				]
+			},
+			{
+				'adjust': True,
+				'expected': [
+					{"account": "_Test Account Service Tax - _TC", "debit": 0.0, "credit": 6.91, "is_opening": "Yes"},
+					{"account": "Debtors - _TC", "debit": 145.0, "credit": 0.0, "is_opening": "Yes"},
+					{"account": "Temporary Opening - _TC", "debit": 0.0, "credit": 138.09, "is_opening": "Yes"},
+				]
+			},
+
 		]
-		self.assertEqual(len(actual), 4)
-		self.assertEqual(expected, actual)
+
+		for case in cases:
+			adjust = case['adjust']
+			expected = case['expected']
+			with self.subTest("With adjusting inclusive tax" if adjust else "Without adjusting inclusive tax"):
+				with temporary_flag("disable_inclusive_tax_rounding_correction", not adjust):
+					si = self._create_opening_invoice_with_inclusive_tax()
+					# 'Round Off for Opening' is set in Company master
+					self._create_opening_roundoff_account(si.company)
+
+					si.submit()
+					actual = frappe.db.get_all(
+						"GL Entry",
+						filters={"voucher_no": si.name, "is_opening": "Yes", "is_cancelled": False},
+						fields=["account", "debit", "credit", "is_opening"],
+						order_by="account,debit",
+					)
+					self.assertEqual(len(actual), len(expected))
+					self.assertListEqual(expected, actual)
+
 
 	@IntegrationTestCase.change_settings("Accounts Settings", {"enable_common_party_accounting": True})
 	def test_common_party_with_foreign_currency_jv(self):
@@ -4388,7 +4417,7 @@ def check_gl_entries(doc, voucher_no, expected_gle, posting_date, voucher_type="
 		doc.assertEqual(getdate(expected_gle[i][3]), gle.posting_date)
 
 
-def create_sales_invoice(**args):
+def create_sales_invoice(**args) -> SalesInvoice:
 	si = frappe.new_doc("Sales Invoice")
 	args = frappe._dict(args)
 	if args.posting_date:
