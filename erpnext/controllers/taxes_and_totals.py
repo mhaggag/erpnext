@@ -4,7 +4,7 @@
 
 import json
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, cast
 
 import frappe
 from frappe import _, scrub
@@ -351,9 +351,13 @@ class calculate_taxes_and_totals:
 		"""
 		tax_amounts_by_idx: Dict[int, float] = {}
 		for tax in taxes:
-			tax_amounts_by_idx[tax.idx] = flt(
+			amount = flt(
 				tax.tax_fraction_for_current_item * tax_amount / cumulated_tax_fraction, tax.precision("tax_amount")
 			)
+			tax_amounts_by_idx[tax.idx] = amount
+			if not hasattr(tax, "adjustment_by_item_idx"):
+				tax.adjustment_by_item_idx = cast(Dict[int, float], {})
+			tax.adjustment_by_item_idx[item_idx] = amount
 
 		# The sum of all tax amounts should equal the input [tax_amount]. Due to rounding errors, this may not be
 		# the case. To avoid that, we allocate the error to one of the taxes (i.e. adjust its value to compensate)
@@ -365,25 +369,26 @@ class calculate_taxes_and_totals:
 			)
 
 			if frappe.flags.apply_inclusive_tax_correction_to_last_tax:
-				adjusted_idx = taxes[-1].idx
-				adjusted_tax = taxes[-1].account_head
+				adjusted_tax = taxes[-1]
 				sum_other_taxes = sum(list(tax_amounts_by_idx.values())[:-1])
-				adjusted_value = flt(tax_amount - sum_other_taxes, taxes[-1].precision("tax_amount"))
 			else:
-				adjusted_idx = taxes[0].idx
-				adjusted_tax = taxes[0].account_head
+				adjusted_tax = taxes[0]
 				sum_other_taxes = sum(list(tax_amounts_by_idx.values())[1:])
-				adjusted_value = flt(tax_amount - sum_other_taxes, taxes[0].precision("tax_amount"))
+
+			adjusted_idx = adjusted_tax.idx
+			adjusted_tax_account = adjusted_tax.account_head
+			adjusted_value = flt(tax_amount - sum_other_taxes, adjusted_tax.precision("tax_amount"))
+			adjusted_tax.adjustment_by_item_idx[item_idx] = adjusted_value
 
 			print(
-				f"Adjusting tax value for '{adjusted_tax}' from {tax_amounts_by_idx[adjusted_idx]} "
+				f"Adjusting tax value for '{adjusted_tax_account}' from {tax_amounts_by_idx[adjusted_idx]} "
 				f"to {adjusted_value} to bring sum of included taxes from {sum_taxes} to {tax_amount}"
 			)
 			tax_amounts_by_idx[adjusted_idx] = adjusted_value
 
 		return ItemTaxAdjustment(tax_amounts_by_idx)
 
-	def _describe_tax(self, tax: SalesTaxesandCharges, tax_rate) -> str:
+	def _describe_tax(self, tax: SalesTaxesandCharges, tax_rate: float) -> str:
 		is_included = "Included" if tax.included_in_print_rate else "Not included"
 		amount = str(tax_rate) + '%' if tax_rate else tax.tax_amount
 		return f"{amount} {tax.description} {tax.charge_type} ({is_included})"
@@ -576,11 +581,10 @@ class calculate_taxes_and_totals:
 
 		elif tax.charge_type == "On Net Total":
 			current_tax_amount = (tax_rate / 100.0) * item.net_amount
-			if (not self.discount_amount_applied) and item_idx in self.item_tax_adjustment:
-				if tax.idx in self.item_tax_adjustment[item_idx].tax_amounts_by_tax_idx:
-					new_tax_amount = self.item_tax_adjustment[item_idx].tax_amounts_by_tax_idx[tax.idx]
-					print(f"Applying tax adjustment for {item.item_code}@{item_idx}: {current_tax_amount} -> {new_tax_amount}")
-					current_tax_amount = new_tax_amount
+			if (not self.discount_amount_applied) and hasattr(tax, "adjustment_by_item_idx") and item_idx in tax.adjustment_by_item_idx:
+				new_tax_amount = tax.adjustment_by_item_idx[item_idx]
+				print(f"Applying tax adjustment for {tax.account_head}, {item.item_code}@{item_idx}: {current_tax_amount} -> {new_tax_amount}")
+				current_tax_amount = new_tax_amount
 		elif tax.charge_type == "On Previous Row Amount":
 			current_tax_amount = (tax_rate / 100.0) * self.doc.get("taxes")[
 				cint(tax.row_id) - 1
