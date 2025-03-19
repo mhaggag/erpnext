@@ -1,8 +1,11 @@
+from typing import Dict, List, cast
+
 import frappe
 from frappe import _
 from frappe.utils import flt, money_in_words, round_based_on_smallest_currency_fraction
 
 import erpnext
+from erpnext.accounts.doctype.sales_taxes_and_charges.sales_taxes_and_charges import SalesTaxesandCharges
 from erpnext.controllers.taxes_and_totals import get_itemised_tax
 
 
@@ -19,15 +22,23 @@ def update_itemised_tax_data(doc):
 		return
 
 	itemised_tax = get_itemised_tax(doc.taxes)
+	tax_by_description: Dict[str, SalesTaxesandCharges] = {}
+	for tax_dict in cast(List[SalesTaxesandCharges], doc.taxes):
+		tax_by_description[tax_dict.description] = tax_dict
 
-	for row in doc.items:
+	for n, row in enumerate(doc.items):
+		item_idx = n + 1
 		tax_rate, tax_amount = 0.0, 0.0
 		# dont even bother checking in item tax template as it contains both input and output accounts - double the tax rate
 		item_code = row.item_code or row.item_name
 		if itemised_tax.get(item_code):
-			for tax in itemised_tax.get(item_code).values():
-				_tax_rate = flt(tax.get("tax_rate", 0), row.precision("tax_rate"))
-				tax_amount += flt((row.net_amount * _tax_rate) / 100, row.precision("tax_amount"))
+			for description, tax_dict in itemised_tax.get(item_code).items():
+				tax = tax_by_description[description]
+				_tax_rate = flt(tax_dict.get("tax_rate", 0), row.precision("tax_rate"))
+				if hasattr(tax, "adjustment_by_item_idx") and item_idx in tax.adjustment_by_item_idx:
+					tax_amount += tax.adjustment_by_item_idx[item_idx]
+				else:
+					tax_amount += flt((row.net_amount * _tax_rate) / 100, row.precision("tax_amount"))
 				tax_rate += _tax_rate
 
 		row.tax_rate = flt(tax_rate, row.precision("tax_rate"))
