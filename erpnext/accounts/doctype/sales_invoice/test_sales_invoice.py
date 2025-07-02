@@ -50,7 +50,6 @@ from erpnext.stock.doctype.stock_reconciliation.test_stock_reconciliation import
 from erpnext.stock.get_item_details import get_item_tax_map
 from erpnext.stock.utils import get_incoming_rate, get_stock_balance
 from erpnext.tests.utils import ERPNextTestSuite
-from erpnext.utilities.regional import temporary_flag
 
 
 class TestSalesInvoice(ERPNextTestSuite):
@@ -346,21 +345,30 @@ class TestSalesInvoice(ERPNextTestSuite):
 				"rate": 35.0,
 				"qty": 1,
 				"net_amount": 30.43,
-				"tax_amount": 4.57,
+				"tax_amount": 4.56,
+				"adjusted_tax_amount": 4.57,
+				"total_in_tax_table": 34.99,
+				"adjusted_total_in_tax_table": 35.0,
 				"grand_total": 35.0,
 			},
 			{
 				"rate": 80.0,
 				"qty": 1,
 				"net_amount": 69.57,
-				"tax_amount": 10.43,
+				"tax_amount": 10.44,
+				"adjusted_tax_amount": 10.43,
+				"total_in_tax_table": 80.01,
+				"adjusted_total_in_tax_table": 80.00,
 				"grand_total": 80.0,
 			},
 			{
 				"rate": 50.0,
 				"qty": 3,
 				"net_amount": 130.43,
-				"tax_amount": 19.57,
+				"tax_amount": 19.56,
+				"adjusted_tax_amount": 19.57,
+				"total_in_tax_table": 149.99,
+				"adjusted_total_in_tax_table": 150.0,
 				"grand_total": 150.0,
 			},
 			{
@@ -368,34 +376,42 @@ class TestSalesInvoice(ERPNextTestSuite):
 				"qty": 2,
 				"net_amount": 34.78,
 				"tax_amount": 5.22,
+				"adjusted_tax_amount": 5.22,
+				"total_in_tax_table": 40.0,
+				"adjusted_total_in_tax_table": 40.0,
 				"grand_total": 40.0,
 			},
 		]
 
-		for case in cases:
-			with self.subTest(f"{case['qty']} x {case['rate']}"):
-				si = cast(SalesInvoice, create_sales_invoice(qty=case['qty'], rate=case['rate'], do_not_save=True))
-				si.append(
-					"taxes",
-					{
-						"charge_type": "On Net Total",
-						"account_head": "_Test Account Service Tax - _TC",
-						"cost_center": "_Test Cost Center - _TC",
-						"description": "VAT",
-						"rate": 15,
-						"included_in_print_rate": 1,
-					},
-				)
-				si.insert()
+		for adjust in [True, False]:
+			tax_key = "adjusted_tax_amount" if adjust else "tax_amount"
+			total_in_tax_table_key = "adjusted_total_in_tax_table" if adjust else "total_in_tax_table"
+			adjustment_description = "With rounding correction" if adjust else "Without rounding correction"
+			with change_settings("Accounts Settings", {"apply_inclusive_tax_rounding_correction": adjust}):
+				for case in cases:
+					with self.subTest(f"{case['qty']} x {case['rate']} {adjustment_description}"):
+						si = cast(SalesInvoice, create_sales_invoice(qty=case['qty'], rate=case['rate'], do_not_save=True))
+						si.append(
+							"taxes",
+							{
+								"charge_type": "On Net Total",
+								"account_head": "_Test Account Service Tax - _TC",
+								"cost_center": "_Test Cost Center - _TC",
+								"description": "VAT",
+								"rate": 15,
+								"included_in_print_rate": 1,
+							},
+						)
+						si.insert()
 
-				# There should be no difference between total in taxes and grand total in all these cases
-				# (ideally, in all cases)
-				self.assertEqual(si.items[0].net_amount, case['net_amount'])
-				self.assertEqual(si.net_total, si.base_net_total)
-				self.assertEqual(si.net_total, case['net_amount'])
-				self.assertEqual(si.grand_total, case['grand_total'])
-				self.assertEqual(si.taxes[0].tax_amount, case['tax_amount'])
-				self.assertEqual(si.taxes[0].total, case['grand_total'])
+						# There should be no difference between total in taxes and grand total in all these cases
+						# (ideally, in all cases)
+						self.assertEqual(si.items[0].net_amount, case['net_amount'])
+						self.assertEqual(si.net_total, si.base_net_total)
+						self.assertEqual(si.net_total, case['net_amount'])
+						self.assertEqual(si.grand_total, case['grand_total'])
+						self.assertEqual(si.taxes[0].tax_amount, case[tax_key])
+						self.assertEqual(si.taxes[0].total, case[total_in_tax_table_key])
 
 	def test_sales_invoice_with_discount_and_inclusive_tax(self):
 		si = create_sales_invoice(qty=100, rate=50, do_not_save=True)
@@ -521,6 +537,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 			"_Test Account Education Cess - _TC": [2.8, 2.61, 1296.37],
 			"_Test Account S&H Education Cess - _TC": [1.4, 1.30, 1297.67],
 			"_Test Account CST - _TC": [27.88, 25.95, 1323.62],
+			# TODO: 156.25 or 156.24?
 			"_Test Account VAT - _TC": [156.25, 145.43, 1469.05],
 			"_Test Account Customs Duty - _TC": [125, 116.34, 1585.39],
 			"_Test Account Shipping Charges - _TC": [100, 100, 1685.39],
@@ -805,6 +822,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 			"_Test Account Education Cess - _TC": [2.8, 1392.77],
 			"_Test Account S&H Education Cess - _TC": [1.4, 1394.17],
 			"_Test Account CST - _TC": [27.88, 1422.05],
+			# 156.24 or 156.25?
 			"_Test Account VAT - _TC": [156.25, 1578.30],
 			"_Test Account Customs Duty - _TC": [125, 1703.30],
 			"_Test Account Shipping Charges - _TC": [100, 1803.30],

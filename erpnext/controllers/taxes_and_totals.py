@@ -324,7 +324,7 @@ class calculate_taxes_and_totals:
 							item_tax_map,
 							flt(amount - item.net_amount, self.doc.precision("tax_amount", "taxes")),
 							cumulated_tax_fraction,
-							[t for t in self.doc.get("taxes") if t.included_in_print_rate and t.tax_fraction_for_current_item],
+							[t for t in self.doc.taxes if t.included_in_print_rate and t.tax_fraction_for_current_item],
 						)
 
 				self._set_in_company_currency(item, ["net_rate", "net_amount"])
@@ -346,37 +346,42 @@ class calculate_taxes_and_totals:
 		level). This function detects that the sum of inclusive taxes should be (amount - net_amount), i.e.
 		(35 - 30.43 = 4.57) in the above case, and adjusts the tax accordingly by 0.01
 		"""
-		tax_amounts_by_idx: Dict[int, float] = {}
+		tax_amounts: List[float] = []
 		for tax in taxes:
+			amount_nr = tax.tax_fraction_for_current_item * tax_amount / cumulated_tax_fraction
 			amount = flt(
 				tax.tax_fraction_for_current_item * tax_amount / cumulated_tax_fraction, tax.precision("tax_amount")
 			)
-			tax_amounts_by_idx[tax.idx] = amount
-			if not hasattr(tax, "adjustment_by_item_idx"):
-				tax.adjustment_by_item_idx = cast(Dict[int, float], {})
-			tax.adjustment_by_item_idx[item_idx] = amount
+			tax_amounts.append(amount)
+			if not hasattr(tax, "adjusted_value_by_item_idx"):
+				tax.adjusted_value_by_item_idx = cast(Dict[int, float], {})
+			# Initially, the adjusted value is just the calculated value rounded to the expected precision
+			# Actual adjustment happens below if needed
+			# tax.adjusted_value_by_item_idx[item_idx] = amount_nr
 
-		# The sum of all tax amounts should equal the input [tax_amount]. Due to rounding errors, this may not be
-		# the case. To avoid that, we allocate the error to one of the taxes (i.e. adjust its value to compensate)
-		sum_taxes = sum(tax_amounts_by_idx.values())
-		if sum_taxes != tax_amount:
-			_test_print(
-				f"Adjusting inclusive tax for item '{item.item_code}'@{item_idx} for tax-inclusive accounts: "
-				+ ', '.join([_describe_tax(t, self._get_tax_rate(t, item_tax_map)) for t in taxes])
-			)
+		# The sum of all tax amounts should equal the input [tax_amount]. Due to rounding errors, this may
+		# not be the case. To avoid that, we allocate the error to one of the taxes (i.e. adjust its value
+		# to compensate). We can allocate it to the first or last, but we're going with the first so that
+		# previous row calculations can proceed normally
+		sum_taxes = sum(tax_amounts)
+		if sum_taxes == tax_amount:
+			return
 
-			adjusted_tax = taxes[0]
-			sum_other_taxes = sum(list(tax_amounts_by_idx.values())[1:])
-			adjusted_idx = adjusted_tax.idx
-			adjusted_tax_account = adjusted_tax.account_head
-			adjusted_value = flt(tax_amount - sum_other_taxes, adjusted_tax.precision("tax_amount"))
-			adjusted_tax.adjustment_by_item_idx[item_idx] = adjusted_value
+		_test_print(f"Adjusting inclusive tax for item '{item.item_code}'@{item_idx} for tax-inclusive accounts: ")
+		for tax in taxes:
+			_test_print(f"* {_describe_tax(tax, self._get_tax_rate(tax, item_tax_map))}")
 
-			_test_print(
-				f"Adjusting tax value for '{adjusted_tax_account}' from {tax_amounts_by_idx[adjusted_idx]} "
-				f"to {adjusted_value} to bring sum of included taxes from {sum_taxes} to {tax_amount}"
-			)
-			tax_amounts_by_idx[adjusted_idx] = adjusted_value
+		sum_other_taxes = sum_taxes - tax_amounts[0]
+		adjusted_tax = taxes[0]
+		adjusted_idx = adjusted_tax.idx
+		adjusted_tax_account = adjusted_tax.account_head
+		adjusted_value = flt(tax_amount - sum_other_taxes, adjusted_tax.precision("tax_amount"))
+		adjusted_tax.adjusted_value_by_item_idx[item_idx] = adjusted_value
+
+		_test_print(
+			f"Adjusting tax value for '{adjusted_tax_account}' from {tax_amounts[adjusted_idx]} "
+			f"to {adjusted_value} to bring sum of included taxes from {sum_taxes} to {tax_amount}"
+		)
 
 	def _load_item_tax_rate(self, item_tax_rate):
 		return json.loads(item_tax_rate) if item_tax_rate else {}
@@ -583,10 +588,15 @@ class calculate_taxes_and_totals:
 			if tax.account_head in item_tax_map:
 				current_net_amount = item.net_amount
 			current_tax_amount = (tax_rate / 100.0) * item.net_amount
-			if (not self.discount_amount_applied) and hasattr(tax, "adjustment_by_item_idx") and item_idx in tax.adjustment_by_item_idx:
-				new_tax_amount = tax.adjustment_by_item_idx[item_idx]
-				_test_print(f"Applying tax adjustment for {tax.account_head}, {item.item_code}@{item_idx}: {current_tax_amount} -> {new_tax_amount}")
-				current_tax_amount = new_tax_amount
+			if (
+				(not self.discount_amount_applied) and
+				hasattr(tax, "adjusted_value_by_item_idx") and
+				item_idx in tax.adjusted_value_by_item_idx
+			):
+				adjusted_amount = tax.adjusted_value_by_item_idx[item_idx]
+				if current_tax_amount != adjusted_amount:
+					_test_print(f"Applying tax adjustment for {_describe_tax(tax, tax_rate)}, {item.item_code}@{item_idx}: {current_tax_amount} -> {adjusted_amount}")
+					current_tax_amount = adjusted_amount
 		elif tax.charge_type == "On Previous Row Amount":
 			current_net_amount = self.doc.get("taxes")[cint(tax.row_id) - 1].tax_amount_for_current_item
 			current_tax_amount = (tax_rate / 100.0) * current_net_amount

@@ -35,8 +35,8 @@ def update_itemised_tax_data(doc):
 			for description, tax_dict in itemised_tax.get(item_code).items():
 				tax = tax_by_description[description]
 				_tax_rate = flt(tax_dict.get("tax_rate", 0), row.precision("tax_rate"))
-				if hasattr(tax, "adjustment_by_item_idx") and item_idx in tax.adjustment_by_item_idx:
-					tax_amount += tax.adjustment_by_item_idx[item_idx]
+				if hasattr(tax, "adjusted_value_by_item_idx") and item_idx in tax.adjusted_value_by_item_idx:
+					tax_amount += tax.adjusted_value_by_item_idx[item_idx]
 				else:
 					tax_amount += flt((row.net_amount * _tax_rate) / 100, row.precision("tax_amount"))
 				tax_rate += _tax_rate
