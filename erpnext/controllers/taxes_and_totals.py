@@ -361,8 +361,8 @@ class calculate_taxes_and_totals:
 				tax.adjusted_value_by_item_idx = cast(Dict[int, float], {})
 			# Initially, the adjusted value is just the calculated value rounded to the expected precision
 			# Actual adjustment happens below if needed
-			tax.adjusted_value_by_item_idx[item_idx] = amount_nr
-			# tax.adjusted_value_by_item_idx[item_idx] = amount
+			# tax.adjusted_value_by_item_idx[item_idx] = amount_nr
+			tax.adjusted_value_by_item_idx[item_idx] = amount
 
 		# The sum of all tax amounts should equal the input [tax_amount]. Due to rounding errors, this may
 		# not be the case. To avoid that, we allocate the error to one of the taxes (i.e. adjust its value

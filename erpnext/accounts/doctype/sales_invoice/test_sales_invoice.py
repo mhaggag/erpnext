@@ -536,12 +536,12 @@ class TestSalesInvoice(ERPNextTestSuite):
 		# check tax calculation
 		expected_values = {
 			"keys": ["tax_amount", "tax_amount_after_discount_amount", "total"],
-			"_Test Account Excise Duty - _TC": [139.99, 130.31, 1293.76],
+			"_Test Account Excise Duty - _TC": [140, 130.31, 1293.76],
 			"_Test Account Education Cess - _TC": [2.8, 2.61, 1296.37],
 			"_Test Account S&H Education Cess - _TC": [1.4, 1.30, 1297.67],
 			"_Test Account CST - _TC": [27.88, 25.95, 1323.62],
 			# TODO: 156.25 or 156.24?
-			"_Test Account VAT - _TC": [156.25, 145.43, 1469.05],
+			"_Test Account VAT - _TC": [156.24, 145.43, 1469.05],
 			"_Test Account Customs Duty - _TC": [125, 116.34, 1585.39],
 			"_Test Account Shipping Charges - _TC": [100, 100, 1685.39],
 			"_Test Account Discount - _TC": [-180.33, -168.54, 1516.85],
@@ -821,12 +821,12 @@ class TestSalesInvoice(ERPNextTestSuite):
 		# check tax calculation
 		expected_values = {
 			"keys": ["tax_amount", "total"],
-			# Excise duty adjusted by 0.01 down to bring sum of included taxes from 125.03 to 125.02
-			"_Test Account Excise Duty - _TC": [140.0, 1389.98],
-			"_Test Account Education Cess - _TC": [2.8, 1392.77],
-			"_Test Account S&H Education Cess - _TC": [1.4, 1394.17],
-			"_Test Account CST - _TC": [27.88, 1422.05],
-			# 156.24 or 156.25?
+			"_Test Account Excise Duty - _TC": [140, 1389.98],
+			"_Test Account Education Cess - _TC": [2.8, 1392.78],
+			"_Test Account S&H Education Cess - _TC": [1.4, 1394.18],
+			"_Test Account CST - _TC": [27.88, 1422.06],
+			# VAT adjusted by 0.01 down to bring sum of included taxes from 125.03 to 125.02
+			# from 156.25 to 156.24
 			"_Test Account VAT - _TC": [156.24, 1578.30],
 			"_Test Account Customs Duty - _TC": [125, 1703.30],
 			"_Test Account Shipping Charges - _TC": [100, 1803.30],
@@ -840,6 +840,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 		self.assertEqual(si.base_grand_total, 1622.97)
 		self.assertEqual(si.grand_total, 1622.97)
 
+	@temporary_flag('verbose_tax_calculations', True)
 	def test_sales_invoice_calculation_export_currency_with_tax_inclusive_price(self):
 		# prepare
 		si = frappe.copy_doc(self.globalTestRecords["Sales Invoice"][3])
@@ -2384,8 +2385,8 @@ class TestSalesInvoice(ERPNextTestSuite):
 			(d[0], d)
 			for d in [
 				[si.debit_to, 4488.0, 0.0],
-				["_Test Account Service Tax - _TC", 0.0, 240.44],
-				["_Test Account VAT - _TC", 0.0, 240.43],
+				["_Test Account Service Tax - _TC", 0.0, 240.43],
+				["_Test Account VAT - _TC", 0.0, 240.44],
 				["Sales - _TC", 0.0, 4007.15],
 				[round_off_account, 0.02, 0.0],
 			]
