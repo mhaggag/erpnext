@@ -41,6 +41,8 @@ class calculate_taxes_and_totals:
 		self._items = self.filter_rows() if self.doc.doctype == "Quotation" else self.doc.get("items")
 
 		get_round_off_applicable_accounts(self.doc.company, frappe.flags.round_off_applicable_accounts)
+
+		_test_print(f"Calculating taxes for {doc.name}")
 		self.calculate()
 
 	def filter_rows(self):
@@ -318,23 +320,24 @@ class calculate_taxes_and_totals:
 				if cumulated_tax_fraction and frappe.flags.apply_inclusive_tax_rounding_correction:
 					# idx is 1-based
 					item_idx = item_index + 1
-					self._adjust_inclusive_tax_for_current_item(
+					tax_amount = flt(amount - item.net_amount, self.doc.precision("tax_amount", "taxes"))
+					self._calculate_and_adjust_included_tax_for_item(
 							item_idx,
-							item,
+							item.item_code,
 							item_tax_map,
-							flt(amount - item.net_amount, self.doc.precision("tax_amount", "taxes")),
+							tax_amount,
 							cumulated_tax_fraction,
 							[t for t in self.doc.taxes if t.included_in_print_rate and t.tax_fraction_for_current_item],
 						)
 
 				self._set_in_company_currency(item, ["net_rate", "net_amount"])
 
-	def _adjust_inclusive_tax_for_current_item(
-		self, item_idx: int, item, item_tax_map, tax_amount: float, cumulated_tax_fraction: float,
+	def _calculate_and_adjust_included_tax_for_item(
+		self, item_idx: int, item_code: str, item_tax_map, tax_amount: float, cumulated_tax_fraction: float,
 		taxes: List[SalesTaxesandCharges]
 	) -> None:
 		"""
-		Adjusts the calculated inclusive tax for the item if needed so that inclusive taxes + net amount =
+		Calculates the included tax for the item and adjusts it if needed so that inclusive taxes + net amount =
 		inclusive item rate.
 
 		e.g. If an inclusive rate is 35 with an included VAT of 15%:
@@ -343,8 +346,9 @@ class calculate_taxes_and_totals:
 		* The sum is 30.43 + 4.56 = 34.99
 
 		This causes problems with VAT authorities that require taxes to add up (at the item and/or invoice
-		level). This function detects that the sum of inclusive taxes should be (amount - net_amount), i.e.
-		(35 - 30.43 = 4.57) in the above case, and adjusts the tax accordingly by 0.01
+		level). This function distributes the sum of included taxes [tax_amount] among all taxes included
+		in rate using their tax fractions. It also detects cases of error due to rounding and adjusts
+		one tax up/down to bring the sum of included taxes to the expected amount.
 		"""
 		tax_amounts: List[float] = []
 		for tax in taxes:
@@ -357,30 +361,40 @@ class calculate_taxes_and_totals:
 				tax.adjusted_value_by_item_idx = cast(Dict[int, float], {})
 			# Initially, the adjusted value is just the calculated value rounded to the expected precision
 			# Actual adjustment happens below if needed
-			# tax.adjusted_value_by_item_idx[item_idx] = amount_nr
+			tax.adjusted_value_by_item_idx[item_idx] = amount_nr
+			# tax.adjusted_value_by_item_idx[item_idx] = amount
 
 		# The sum of all tax amounts should equal the input [tax_amount]. Due to rounding errors, this may
 		# not be the case. To avoid that, we allocate the error to one of the taxes (i.e. adjust its value
-		# to compensate). We can allocate it to the first or last, but we're going with the first so that
-		# previous row calculations can proceed normally
+		# to compensate).
 		sum_taxes = sum(tax_amounts)
 		if sum_taxes == tax_amount:
 			return
 
-		_test_print(f"Adjusting inclusive tax for item '{item.item_code}'@{item_idx} for tax-inclusive accounts: ")
+		_test_print(f"[idx {item_idx}, {item_code}] Adjusting inclusive tax for item to bring sum from {sum_taxes} to {tax_amount}: ")
 		for tax in taxes:
-			_test_print(f"* {_describe_tax(tax, self._get_tax_rate(tax, item_tax_map))}")
+			_test_print(f"[idx {item_idx}, {item_code}] * {_describe_tax(tax, self._get_tax_rate(tax, item_tax_map))}")
 
-		sum_other_taxes = sum_taxes - tax_amounts[0]
-		adjusted_tax = taxes[0]
-		adjusted_idx = adjusted_tax.idx
+		# We now choose which tax to allocate the adjustment to. We prefer to apply it to the last
+		# "On Net Total" tax we find to minimize effect (e.g. due to subsequent "previous row" taxes).
+		# If we don't find any "On Net Total", we apply it to the first tax and let the calculations propagate.
+		adjusted_index = -1
+		for i, tax in enumerate(taxes):
+			if tax.charge_type == "On Net Total":
+				adjusted_index = i
+
+		if adjusted_index == -1:
+			adjusted_index = 0
+
+		sum_other_taxes = sum_taxes - tax_amounts[adjusted_index]
+		adjusted_tax = taxes[adjusted_index]
 		adjusted_tax_account = adjusted_tax.account_head
 		adjusted_value = flt(tax_amount - sum_other_taxes, adjusted_tax.precision("tax_amount"))
 		adjusted_tax.adjusted_value_by_item_idx[item_idx] = adjusted_value
 
 		_test_print(
-			f"Adjusting tax value for '{adjusted_tax_account}' from {tax_amounts[adjusted_idx]} "
-			f"to {adjusted_value} to bring sum of included taxes from {sum_taxes} to {tax_amount}"
+			f"[idx {item_idx}, {item_code}] Overriding tax value for '{adjusted_tax_account}' from {tax_amounts[adjusted_index]} "
+			f"to {adjusted_value}"
 		)
 
 	def _load_item_tax_rate(self, item_tax_rate):
@@ -595,7 +609,7 @@ class calculate_taxes_and_totals:
 			):
 				adjusted_amount = tax.adjusted_value_by_item_idx[item_idx]
 				if current_tax_amount != adjusted_amount:
-					_test_print(f"Applying tax adjustment for {_describe_tax(tax, tax_rate)}, {item.item_code}@{item_idx}: {current_tax_amount} -> {adjusted_amount}")
+					_test_print(f"[idx {item_idx}, {item.item_code}] Applying adjustment for {_describe_tax(tax, tax_rate)}: {current_tax_amount} -> {adjusted_amount}")
 					current_tax_amount = adjusted_amount
 		elif tax.charge_type == "On Previous Row Amount":
 			current_net_amount = self.doc.get("taxes")[cint(tax.row_id) - 1].tax_amount_for_current_item
@@ -610,7 +624,7 @@ class calculate_taxes_and_totals:
 		if not (self.doc.get("is_consolidated") or tax.get("dont_recompute_tax")):
 			self.set_item_wise_tax(item, tax, tax_rate, current_tax_amount, current_net_amount)
 
-		_test_print(f"{_describe_tax(tax, tax_rate)} {current_net_amount}, {current_tax_amount}")
+		_test_print(f"[idx {item_idx}, {item.item_code}] {_describe_tax(tax, tax_rate)}: Current Net: {current_net_amount}, Current Tax: {current_tax_amount}")
 		return current_net_amount, current_tax_amount
 
 	def set_item_wise_tax(self, item, tax, tax_rate, current_tax_amount, current_net_amount):
@@ -1290,7 +1304,7 @@ class init_landed_taxes_and_totals:
 
 
 def _test_print(message: str) -> None:
-	if frappe.in_test:
+	if frappe.in_test and frappe.flags.verbose_tax_calculations:
 		print(message)
 
 def _describe_tax(tax: SalesTaxesandCharges, tax_rate: float) -> str:

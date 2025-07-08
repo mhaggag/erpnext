@@ -50,6 +50,7 @@ from erpnext.stock.doctype.stock_reconciliation.test_stock_reconciliation import
 from erpnext.stock.get_item_details import get_item_tax_map
 from erpnext.stock.utils import get_incoming_rate, get_stock_balance
 from erpnext.tests.utils import ERPNextTestSuite
+from erpnext.utilities.regional import temporary_flag
 
 
 class TestSalesInvoice(ERPNextTestSuite):
@@ -334,6 +335,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 		self.assertEqual(si.base_grand_total, 1627.0)
 		self.assertEqual(si.grand_total, 32.54)
 
+	@temporary_flag('verbose_tax_calculations', True)
 	def test_sales_invoice_with_inclusive_tax(self):
 		# The first two cases exhibit similar but opposite behaviors:
 		# The first results in net total of 30.43 and a taxes[0].total of 34.99 (0.1 lower than expected)
@@ -471,6 +473,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 		self.assertEqual(si.net_total, 3859.65)
 		self.assertEqual(si.grand_total, 4900.00)
 
+	@temporary_flag('verbose_tax_calculations', True)
 	def test_sales_invoice_discount_amount(self):
 		si = frappe.copy_doc(self.globalTestRecords["Sales Invoice"][3])
 		si.discount_amount = 104.94
@@ -760,6 +763,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 		si.get("taxes")[0].included_in_print_rate = 0
 		self.assertRaises(frappe.ValidationError, si.insert)
 
+	@temporary_flag('verbose_tax_calculations', True)
 	def test_sales_invoice_calculation_base_currency_with_tax_inclusive_price(self):
 		# prepare
 		si = frappe.copy_doc(self.globalTestRecords["Sales Invoice"][3])
@@ -818,12 +822,12 @@ class TestSalesInvoice(ERPNextTestSuite):
 		expected_values = {
 			"keys": ["tax_amount", "total"],
 			# Excise duty adjusted by 0.01 down to bring sum of included taxes from 125.03 to 125.02
-			"_Test Account Excise Duty - _TC": [139.99, 1389.97],
+			"_Test Account Excise Duty - _TC": [140.0, 1389.98],
 			"_Test Account Education Cess - _TC": [2.8, 1392.77],
 			"_Test Account S&H Education Cess - _TC": [1.4, 1394.17],
 			"_Test Account CST - _TC": [27.88, 1422.05],
 			# 156.24 or 156.25?
-			"_Test Account VAT - _TC": [156.25, 1578.30],
+			"_Test Account VAT - _TC": [156.24, 1578.30],
 			"_Test Account Customs Duty - _TC": [125, 1703.30],
 			"_Test Account Shipping Charges - _TC": [100, 1803.30],
 			"_Test Account Discount - _TC": [-180.33, 1622.97],
@@ -4184,6 +4188,7 @@ class TestSalesInvoice(ERPNextTestSuite):
 		si.save()
 		return si
 
+	@temporary_flag('verbose_tax_calculations', True)
 	def test_rounding_validation_for_opening_with_inclusive_tax(self):
 		with self.subTest("Without adjusting inclusive tax"):
 			with change_settings("Accounts Settings", {"apply_inclusive_tax_rounding_correction": False}):
